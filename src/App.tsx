@@ -49,7 +49,7 @@ export default function App() {
         {/* 聊天内容区 */}
         <section className="flex-1 p-4 overflow-y-auto md:p-8">
           <div className="max-w-3xl mx-auto"> {/* 限制宽度，提升阅读体验 */}
-            <MessageList messages={messages} />
+            <ChatApp/>
           </div>
         </section>
 

@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import MessageList, { type Message } from './MessageList';
 
-interface Message {
-  id: number;
-  text: string;
-  sender: 'user' | 'ai';
-}
 
 const ChatApp: React.FC = () => {
   // 1. 初始化状态：尝试从 localStorage 读取已有的消息
@@ -30,35 +26,18 @@ const ChatApp: React.FC = () => {
 
   const sendMessage = () => {
     if (!input.trim()) return;
-    const newMessage: Message = { id: Date.now(), text: input, sender: 'user' };
+    const newMessage: Message = { id: Date.now(), content: input, role: 'user' };
     setMessages([...messages, newMessage]);
     setInput('');
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100">
+    <div className="flex flex-col h-full bg-transparent">
       {/* 消息展示区 */}
       <div className="flex-1 p-4 space-y-4 overflow-y-auto">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`p-3 rounded-lg ${msg.sender === 'user' ? 'bg-green-500 text-white' : 'bg-white'}`}>
-              {msg.text}
-            </div>
-          </div>
-        ))}
+        <MessageList messages={messages} />
         {/* 自动滚动的锚点元素 */}
         <div ref={scrollRef} />
-      </div>
-
-      {/* 输入框区 */}
-      <div className="p-4 bg-white border-t">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-          placeholder="输入消息..."
-          className="w-full p-2 border rounded"
-        />
       </div>
     </div>
   );
