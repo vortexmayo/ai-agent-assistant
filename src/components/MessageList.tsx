@@ -1,5 +1,3 @@
-import React from 'react';
-
 // 1. 定义单条消息的 TypeScript 类型规范
 export interface Message {
   id: number;
@@ -19,7 +17,7 @@ export default function MessageList({ messages }: MessageListProps) {
         <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
           <div className={`flex max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'} gap-3`}>
             {/* 头像占位 */}
-            <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}>
+            <div className={`w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}>
               {msg.role === 'user' ? 'ME' : 'AI'}
             </div>
 

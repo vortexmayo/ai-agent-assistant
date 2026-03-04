@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChatInput } from './components/ChatInput';
 import ChatApp from './components/ChatApp';
-// 1. 引入 MessageList 组件和 Message 类型
-import MessageList, { type Message } from './components/MessageList';
+import { type Message } from './components/MessageList';
 
 // 写死一个初始的数据数组 
 const initialMessages: Message[] = [
@@ -11,7 +10,21 @@ const initialMessages: Message[] = [
 ];
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const saved = localStorage.getItem('chat_history');
+    if (!saved) return initialMessages;
+    try {
+      const parsed = JSON.parse(saved) as unknown;
+      if (Array.isArray(parsed)) return parsed as Message[];
+      return initialMessages;
+    } catch {
+      return initialMessages;
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('chat_history', JSON.stringify(messages));
+  }, [messages]);
 
   const handleSend = (text: string) => {
     const newMessage: Message = {
@@ -25,7 +38,7 @@ export default function App() {
   return (
     <div className="flex w-full h-screen font-sans bg-white text-slate-900">
       {/* 1. 左侧：侧边栏 (Sidebar) - 采用深色渐变增加高级感 */}
-      <aside className="flex flex-col flex-shrink-0 w-64 shadow-xl bg-slate-900 text-slate-200">
+      <aside className="flex flex-col shrink-0 w-64 shadow-xl bg-slate-900 text-slate-200">
         <div className="p-4">
           <button className="w-full py-2.5 px-4 border border-slate-700 rounded-lg bg-slate-800 hover:bg-slate-700 transition-all flex items-center justify-center gap-2 text-sm font-medium">
             <span className="text-lg">+</span> 新建对话
@@ -49,14 +62,14 @@ export default function App() {
         {/* 聊天内容区 */}
         <section className="flex-1 p-4 overflow-y-auto md:p-8">
           <div className="max-w-3xl mx-auto"> {/* 限制宽度，提升阅读体验 */}
-            <ChatApp/>
+            <ChatApp messages={messages} />
           </div>
         </section>
 
         {/* 3. 底部：输入框 (Footer) */}
         <footer className="p-6 bg-transparent">
           <div className="relative max-w-3xl mx-auto group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-2xl blur opacity-20 group-focus-within:opacity-40 transition duration-1000"></div>
+            <div className="absolute -inset-0.5 bg-linear-to-r from-blue-500 to-cyan-500 rounded-2xl blur opacity-20 group-focus-within:opacity-40 transition duration-1000"></div>
             <div className="relative p-2 bg-white border shadow-sm border-slate-200 rounded-2xl">
               <ChatInput onSend={handleSend} />
             </div>
