@@ -44,7 +44,7 @@ export default function App() {
     ]);
 
     // 把包含最新消息的数组转换为 API 需要的格式
-    const apiMessages = updatedMessages.map((msg) => ({
+    const apiMessages = updatedMessages.slice(-6).map((msg) => ({
       role: msg.role,
       content: msg.content
     }));
