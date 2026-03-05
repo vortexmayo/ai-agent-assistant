@@ -57,7 +57,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${"200426193636421bb8393d3c557c4ccb.tgiclesSSw0azEM1"}` // ⚠️ 记得换成你的 Key
+          'Authorization': `Bearer ${import.meta.env.VITE_AI_API_KEY}` // ⚠️ 记得换成你的 Key
         },
         body: JSON.stringify({
           model: "glm-4.7-flash",
