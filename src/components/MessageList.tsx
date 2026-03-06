@@ -16,6 +16,7 @@ interface MessageListProps {
 }
 
 export default function MessageList({ messages }: MessageListProps) {
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
   // 存储浏览器支持的语音包列表
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   // 记录当前正在播报的消息 ID，用于控制“朗读/停止”状态
@@ -36,6 +37,11 @@ export default function MessageList({ messages }: MessageListProps) {
     // 清理副作用：组件卸载时立刻停止播报，防止切页面后后台还在说话
     return () => window.speechSynthesis.cancel();
   }, []);
+
+  useEffect(() => {
+    // scrollIntoView 是浏览器原生 API
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   // 2. 核心 TTS 播报函数
   const handleSpeak = (text: string, id: string) => {
@@ -131,10 +137,14 @@ export default function MessageList({ messages }: MessageListProps) {
                   {playingId === msg.id.toString() ? '⏹️ 停止播报' : '🔊 语音播报'}
                 </button>
               )}
+              
             </div>
           </div>
         </div>
       ))}
+      <div ref={messagesEndRef} className="h-0" >
+      </div>
     </div>
+    
   );
 }
