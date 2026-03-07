@@ -1,73 +1,46 @@
-# React + TypeScript + Vite
+# AI 智能体助手 (AI Agent Assistant)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+这是一个基于 React 和 TypeScript 开发的现代化 AI 对话助手 Web 应用。该项目提供类似 ChatGPT 的多会话聊天体验，并接入了智谱大语言模型以实现流式对话回复。
 
-Currently, two official plugins are available:
+## ✨ 核心功能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+* **多会话管理**：支持新建对话、切换历史对话以及删除特定对话。
+* **智能标题生成**：在新的会话中输入第一条消息时，系统会自动截取前 15 个字符作为该会话的标题。
+* **数据本地持久化**：使用 Zustand 的 persist 中间件，所有的聊天记录和会话状态都会自动保存在本地，刷新页面不会丢失数据。
+* **流式响应 (Streaming)**：原生支持服务器推送事件，实现 AI 消息的逐字打印效果。
+* **上下文感知**：每次对话请求会自动携带最近的 6 条聊天记录作为上下文，让 AI 更懂你的语境。
+* **Markdown 与代码高亮**：支持对 AI 返回的 Markdown 格式文本以及代码块进行高亮渲染。
 
-## React Compiler
+## 🛠 技术栈
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+* **前端框架**: React 19 + Vite
+* **开发语言**: TypeScript
+* **样式方案**: Tailwind CSS v4
+* **状态管理**: Zustand v5
+* **AI 模型接口**: 智谱 API (`glm-4.7-flash` 模型)
 
-## Expanding the ESLint configuration
+## 🚀 快速开始
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 1. 环境准备
+确保您的计算机上已安装了 Node.js。
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### 2. 克隆与安装依赖
+将项目克隆到本地后，进入项目根目录并安装依赖：
+```bash
+npm install
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 3. 配置环境变量
+在项目根目录下创建一个 .env 文件，并配置您的智谱 AI API Key：
+VITE_AI_API_KEY=您的智谱_API_KEY
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### 4. 运行开发服务器
+配置完成后，启动本地开发服务器：
+npm run dev
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 5. 构建生产版本
+如果需要打包部署，请运行以下命令：
+npm run build
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### 核心目录结构
+src/App.tsx: 应用程序的主入口，包含侧边栏导航和主聊天区域的 UI 布局。
+src/store/useChatStore.ts: 全局状态管理文件，负责会话的增删改查、API 请求调度以及流式数据的解析。
