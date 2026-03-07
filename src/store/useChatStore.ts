@@ -11,63 +11,126 @@ interface APIResponse {
   }>;
 }
 
-// 1. 定义我们仓库（Store）的数据结构
-interface ChatState {
+// 1. 新增：定义单个会话的数据结构
+export interface Session {
+  id: string;
+  title: string;
   messages: Message[];
-  isGenerating: boolean; // 新增：用来记录 AI 是否正在打字回消息
-  addMessage: (message: Message) => void;
-  updateMessage: (id: number, content: string) => void;
-  clearMessages: () => void;
-  sendMessage: (text: string) => Promise<void>;
+  updatedAt: number;
 }
 
-// 默认写死的初始对话
-const initialMessages: Message[] = [
-  { id: 1, role: 'user', content: '你好，请问你是谁？' },
-  { id: 2, role: 'assistant', content: '你好！我是你的 AI 助手，今天有什么可以帮你的？' },
-];
+// 1. 定义我们仓库（Store）的数据结构
+interface ChatState {
+  sessions: Session[];          // 所有历史会话列表
+  currentSessionId: string;     // 当前正在浏览的会话 ID
+  isGenerating: boolean; // 新增：用来记录 AI 是否正在打字回消息
+  // 会话管理动作
+  createNewSession: () => void;
+  switchSession: (id: string) => void;
+  deleteSession: (id: string) => void;
+  // 消息管理动作
+  clearMessages: () => void;
+  sendMessage: (text: string) => Promise<void>;
+  // 辅助获取当前会话消息的方法（用于 UI 渲染）
+  getCurrentMessages: () => Message[];
 
-// 2. 创建并导出全局 Store
+}
+
+// 生成一个默认的初始会话
+const createDefaultSession = (): Session => ({
+  id: Date.now().toString(),
+  title: '新对话',
+  messages: [{ id: 1, role: 'assistant', content: '你好！我是你的 AI 助手，今天有什么可以帮你的？' }],
+  updatedAt: Date.now(),
+});
+
 export const useChatStore = create<ChatState>()(
-  // 核心魔法：persist 中间件自动接管 localStorage！
   persist(
     (set, get) => ({
-      // --- 状态数据 ---
-      messages: initialMessages,
+      sessions: [createDefaultSession()],
+      currentSessionId: createDefaultSession().id,
       isGenerating: false,
 
-      // --- 基础动作函数 ---
-      addMessage: (message) =>
-        set((state) => ({ messages: [...state.messages, message] })),
+      // --- 获取当前会话的消息 ---
+      getCurrentMessages: () => {
+        const { sessions, currentSessionId } = get();
+        const currentSession = sessions.find(s => s.id === currentSessionId);
+        return currentSession ? currentSession.messages : [];
+      },
 
-      updateMessage: (id, content) =>
+      // --- 会话管理动作 ---
+      createNewSession: () => {
+        const newSession = createDefaultSession();
         set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === id ? { ...msg, content } : msg
-          ),
-        })),
+          sessions: [newSession, ...state.sessions],
+          currentSessionId: newSession.id,
+        }));
+      },
 
-      clearMessages: () => set({ messages: initialMessages }),
+      switchSession: (id) => set({ currentSessionId: id }),
 
-      // --- 核心业务逻辑：发送消息与流式请求 ---
+      deleteSession: (id) => {
+        set((state) => {
+          const newSessions = state.sessions.filter(s => s.id !== id);
+          // 如果删光了，自动建一个兜底
+          if (newSessions.length === 0) {
+            const fallback = createDefaultSession();
+            return { sessions: [fallback], currentSessionId: fallback.id };
+          }
+          // 如果删除的是当前选中的会话，自动切换到第一个
+          const nextSessionId = state.currentSessionId === id ? newSessions[0].id : state.currentSessionId;
+          return { sessions: newSessions, currentSessionId: nextSessionId };
+        });
+      },
+
+      // 清空当前会话的消息
+      clearMessages: () => set((state) => ({
+        sessions: state.sessions.map(s => 
+          s.id === state.currentSessionId 
+            ? { ...s, messages: createDefaultSession().messages } 
+            : s
+        )
+      })),
+
+      // --- 发送消息逻辑 ---
       sendMessage: async (text: string) => {
-        // get() 可以拿到仓库里当前的所有状态和函数
-        const { addMessage, updateMessage } = get();
+        const { currentSessionId, sessions } = get();
+        
+        // 辅助函数：更新当前会话的 messages
+        const updateCurrentSessionMessages = (updater: (msgs: Message[]) => Message[], updateTitle?: string) => {
+          set((state) => ({
+            sessions: state.sessions.map(s => {
+              if (s.id !== state.currentSessionId) return s;
+              return {
+                ...s,
+                messages: updater(s.messages),
+                title: updateTitle || s.title, // 如果传入了新标题则更新标题
+                updatedAt: Date.now()
+              };
+            })
+          }));
+        };
 
         // 第一步：用户消息上屏
         const userMsg: Message = { id: Date.now(), role: 'user', content: text };
-        addMessage(userMsg);
+        
+        // 智能命名：如果是会话的“第一条用户消息”，将其截取作为会话标题
+        const currentSession = sessions.find(s => s.id === currentSessionId);
+        const isFirstUserMessage = currentSession?.messages.filter(m => m.role === 'user').length === 0;
+        const newTitle = isFirstUserMessage ? text.slice(0, 15) : undefined;
+
+        updateCurrentSessionMessages((msgs) => [...msgs, userMsg], newTitle);
 
         // 第二步：给 AI 提前准备空气泡
         const aiMsgId = Date.now() + 1;
-        addMessage({ id: aiMsgId, role: 'assistant', content: '' });
+        updateCurrentSessionMessages((msgs) => [...msgs, { id: aiMsgId, role: 'assistant', content: '' }]);
 
-        // 标记 AI 开始思考/打字
         set({ isGenerating: true });
 
         try {
-          // 截取最近 6 条对话作为上下文记忆
-          const contextMessages = [...get().messages].slice(-6).map((m) => ({
+          // 获取当前上下文（最多取最近 6 条）
+          const latestMessages = get().getCurrentMessages();
+          const contextMessages = latestMessages.slice(-6).map((m) => ({
             role: m.role,
             content: m.content
           }));
@@ -76,7 +139,6 @@ export const useChatStore = create<ChatState>()(
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              // 注意：在实际项目中，别忘了配好环境变量 VITE_AI_API_KEY
               'Authorization': `Bearer ${import.meta.env.VITE_AI_API_KEY}`
             },
             body: JSON.stringify({
@@ -87,9 +149,9 @@ export const useChatStore = create<ChatState>()(
           });
 
           if (!response.ok) throw new Error('请求失败');
-          if (!response.body) throw new Error('没有返回可读流');
-
-          const reader = response.body.getReader();
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('没有返回可读流');
+          
           const decoder = new TextDecoder('utf-8');
           let aiFullReply = '';
 
@@ -109,8 +171,10 @@ export const useChatStore = create<ChatState>()(
                     const newChar = parsedData.choices[0]?.delta?.content;
                     if (newChar) {
                       aiFullReply += newChar;
-                      // 第三步：调用基础动作函数，精准更新那个空气泡的内容
-                      updateMessage(aiMsgId, aiFullReply);
+                      // 第三步：精准更新当前会话中，那个空气泡的内容
+                      updateCurrentSessionMessages((msgs) => 
+                        msgs.map(msg => msg.id === aiMsgId ? { ...msg, content: aiFullReply } : msg)
+                      );
                     }
                   } catch (e) {
                     console.error("JSON 解析失败", e);
@@ -121,15 +185,16 @@ export const useChatStore = create<ChatState>()(
           }
         } catch (error) {
           console.error("请求报错:", error);
-          updateMessage(aiMsgId, '抱歉，网络开小差了，请稍后再试。');
+          updateCurrentSessionMessages((msgs) => 
+            msgs.map(msg => msg.id === aiMsgId ? { ...msg, content: '抱歉，网络开小差了，请稍后再试。' } : msg)
+          );
         } finally {
-          // 无论成功还是失败，最后都要解除生成状态
           set({ isGenerating: false });
         }
       }
     }),
     {
-      name: 'chat_history', // 这个名字就是存入 localStorage 的 key
+      name: 'chat_history',
     }
   )
 );
