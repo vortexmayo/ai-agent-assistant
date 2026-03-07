@@ -2,6 +2,15 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { type Message } from '../components/MessageList';
 
+// 定义大模型返回的数据结构契约
+interface APIResponse {
+  choices: Array<{
+    delta: {
+      content?: string; // 加上问号表示这个字段可能为空（比如流式传输刚开始或结束时）
+    };
+  }>;
+}
+
 // 1. 定义我们仓库（Store）的数据结构
 interface ChatState {
   messages: Message[];
@@ -96,8 +105,8 @@ export const useChatStore = create<ChatState>()(
                 const jsonString = line.replace('data:', '').trim();
                 if (jsonString) {
                   try {
-                    const parsedData = JSON.parse(jsonString);
-                    const newChar = parsedData.choices[0].delta.content;
+                    const parsedData = JSON.parse(jsonString) as APIResponse;
+                    const newChar = parsedData.choices[0]?.delta?.content;
                     if (newChar) {
                       aiFullReply += newChar;
                       // 第三步：调用基础动作函数，精准更新那个空气泡的内容

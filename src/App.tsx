@@ -31,11 +31,11 @@ export default function App() {
       
         {/* 顶部状态栏 */}
         <header className="sticky top-0 z-10 flex items-center px-6 border-b h-14 border-slate-200 bg-white/80 backdrop-blur-md">
-          <h2 className="font-semibold text-slate-700">AI 智能体助手</h2>
+          <h2 className="flex-1 font-semibold text-slate-700">AI 智能体助手</h2>
           {/* 直接绑定清空仓库的方法 */}
           <button
             onClick={clearMessages}
-            className="px-4 py-2 text-sm text-gray-600 transition-colors bg-gray-100 rounded-lg hover:bg-gray-200"
+            className="px-4 py-2 ml-auto text-sm text-gray-600 transition-colors bg-gray-100 rounded-lg hover:bg-gray-200"
           >
             清空对话
           </button>
