@@ -27,19 +27,26 @@
 ### 2. 克隆与安装依赖
 将项目克隆到本地后，进入项目根目录并安装依赖：
 ```bash
-npm install
+npm install 
+```
 
 ### 3. 配置环境变量
 在项目根目录下创建一个 .env 文件，并配置您的智谱 AI API Key：
+```bash
 VITE_AI_API_KEY=您的智谱_API_KEY
+```
 
 ### 4. 运行开发服务器
 配置完成后，启动本地开发服务器：
+```bash
 npm run dev
+```
 
 ### 5. 构建生产版本
 如果需要打包部署，请运行以下命令：
+```bash
 npm run build
+```
 
 ### 核心目录结构
 src/App.tsx: 应用程序的主入口，包含侧边栏导航和主聊天区域的 UI 布局。
