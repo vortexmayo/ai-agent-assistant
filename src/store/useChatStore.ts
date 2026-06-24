@@ -442,7 +442,6 @@ export const useChatStore = create<ChatState>()(
 
           // ====== 阶段三：工具调用循环（大模型自主决策 + 真实 MCP 执行） ======
           const apiKey = import.meta.env.VITE_AI_API_KEY;
-          const allToolResults: Array<{ toolCallId: string; toolName: string; result: unknown }> = [];
 
           // 构建初始消息 Payload
           const latestSession = get().sessions.find((s) => s.id === currentSessionId);
@@ -452,21 +451,26 @@ export const useChatStore = create<ChatState>()(
             summary,
           );
 
+          let finalTextMsgId: string | null = null;
+          let finalReply = '';
+
           // 工具调用循环（最多 MAX_TOOL_CALL_ROUNDS 轮）
           for (let round = 0; round < MAX_TOOL_CALL_ROUNDS; round++) {
             if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-            // 构建请求体（首轮带 tools，后续轮次根据情况决定）
+            const isLastRound = round === MAX_TOOL_CALL_ROUNDS - 1;
+
+            // 构建请求体：最后一轮不带 tools，强制模型输出文本回答
             const requestBody: Record<string, unknown> = {
               model: 'glm-4-flash',
               messages: currentPayload,
               stream: true,
             };
-            if (mcpTools.length > 0 && round < MAX_TOOL_CALL_ROUNDS - 1) {
+            if (mcpTools.length > 0 && !isLastRound) {
               requestBody.tools = toZhipuTools(mcpTools);
             }
 
-            console.log(`🔄 第 ${round + 1} 轮模型请求，Payload ${currentPayload.length} 条消息，工具 ${mcpTools.length} 个`);
+            console.log(`🔄 第 ${round + 1} 轮模型请求，Payload ${currentPayload.length} 条消息${!isLastRound ? '，携带工具' : '，纯文本模式（最后一轮）'}`);
 
             const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
               method: 'POST',
@@ -491,15 +495,21 @@ export const useChatStore = create<ChatState>()(
             let fullReply = '';
             const toolCallsAcc: Map<number, { id: string; name: string; arguments: string }> = new Map();
             let finishReason = '';
-            const aiTextMsg: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'assistant',
-              type: 'text',
-              status: 'streaming',
-              content: '',
-            };
-            addMessage(aiTextMsg);
+            let aiTextMsgId: string | null = null;
+
+            // 只在可能产生文本时提前创建文本消息（首轮或最后一轮）
+            if (round === 0 || isLastRound || !requestBody.tools) {
+              const aiTextMsg: AgentMessage = {
+                id: uid(),
+                groupId,
+                role: 'assistant',
+                type: 'text',
+                status: 'streaming',
+                content: '',
+              };
+              aiTextMsgId = aiTextMsg.id;
+              addMessage(aiTextMsg);
+            }
 
             const decoder = new TextDecoder('utf-8');
             while (true) {
@@ -519,7 +529,7 @@ export const useChatStore = create<ChatState>()(
                   const delta = data.choices?.[0]?.delta;
                   finishReason = data.choices?.[0]?.finish_reason || finishReason;
 
-                  // 累积 tool_calls 片段（SSE 可能分包传输）
+                  // 累积 tool_calls 片段
                   if (delta?.tool_calls) {
                     for (const tc of delta.tool_calls) {
                       const idx = tc.index ?? 0;
@@ -535,8 +545,21 @@ export const useChatStore = create<ChatState>()(
 
                   // 流式文本
                   if (delta?.content) {
+                    // 如果之前没有创建文本消息（中间轮次突然有了文本），补建一个
+                    if (!aiTextMsgId) {
+                      const aiTextMsg: AgentMessage = {
+                        id: uid(),
+                        groupId,
+                        role: 'assistant',
+                        type: 'text',
+                        status: 'streaming',
+                        content: '',
+                      };
+                      aiTextMsgId = aiTextMsg.id;
+                      addMessage(aiTextMsg);
+                    }
                     fullReply += delta.content;
-                    updateMessage(aiTextMsg.id, { content: fullReply });
+                    updateMessage(aiTextMsgId, { content: fullReply });
                   }
                 } catch {
                   // JSON 解析失败，跳过
@@ -544,11 +567,17 @@ export const useChatStore = create<ChatState>()(
               }
             }
 
-            // 本轮结束：判断是否有工具调用需要执行
+            // 本轮结束：判断结果类型
             if (toolCallsAcc.size > 0) {
-              // 删除空文本消息（模型只返回了工具调用，没有文本）
-              if (!fullReply) {
-                updateMessage(aiTextMsg.id, { status: 'success', content: '' });
+              // --- 模型返回了工具调用 ---
+              // 如果有文本伴随（如"让我查一下..."），标记为完成
+              if (aiTextMsgId && fullReply) {
+                updateMessage(aiTextMsgId, { status: 'success' });
+                finalReply = fullReply;
+                finalTextMsgId = aiTextMsgId;
+              } else if (aiTextMsgId && !fullReply) {
+                // 空文本消息，隐藏它（设为空内容、成功状态）
+                updateMessage(aiTextMsgId, { status: 'success', content: '' });
               }
 
               // 展示并执行每一个工具调用
@@ -557,7 +586,6 @@ export const useChatStore = create<ChatState>()(
               for (const [, tc] of toolCallsAcc) {
                 console.log(`🔧 模型调用工具: ${tc.name}`, tc.arguments.slice(0, 200));
 
-                // 展示 tool_call 消息
                 const tcMsgId = uid();
                 const tcMsg: AgentMessage = {
                   id: tcMsgId,
@@ -571,10 +599,9 @@ export const useChatStore = create<ChatState>()(
                 };
                 addMessage(tcMsg);
 
-                // 执行真实 MCP 调用
                 try {
                   let parsedArgs: Record<string, unknown> = {};
-                  try { parsedArgs = JSON.parse(tc.arguments); } catch { /* 参数可能为空 */ }
+                  try { parsedArgs = JSON.parse(tc.arguments); } catch { /* 允许空参数 */ }
 
                   const mcpRes = await executeMCPCall(tc.name, parsedArgs);
                   updateMessage(tcMsgId, { status: 'success' });
@@ -608,12 +635,10 @@ export const useChatStore = create<ChatState>()(
                 }
               }
 
-              allToolResults.push(...roundResults);
-
-              // 更新 Payload：追加 assistant tool_calls 和 tool results
+              // 将工具调用和结果追加到 Payload，供下一轮使用
               const assistantToolCallMsg = {
                 role: 'assistant' as const,
-                content: null,
+                content: fullReply || null,
                 tool_calls: Array.from(toolCallsAcc.entries()).map(([, tc]) => ({
                   id: tc.id,
                   type: 'function' as const,
@@ -630,10 +655,15 @@ export const useChatStore = create<ChatState>()(
                 } as unknown as { role: string; content: string });
               }
 
-              console.log(`✅ 第 ${round + 1} 轮完成，执行了 ${toolCallsAcc.size} 个工具调用，准备下一轮...`);
+              console.log(`✅ 第 ${round + 1} 轮完成，执行了 ${toolCallsAcc.size} 个工具调用`);
             } else {
-              // 没有工具调用，标记完成并退出循环
-              updateMessage(aiTextMsg.id, { status: 'success' });
+              // --- 模型返回了纯文本（最终回答） ---
+              if (aiTextMsgId) {
+                updateMessage(aiTextMsgId, { status: 'success' });
+                finalReply = fullReply;
+                finalTextMsgId = aiTextMsgId;
+              }
+              // 更新 Token 用量
               set({
                 tokenUsage: {
                   promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
@@ -641,13 +671,82 @@ export const useChatStore = create<ChatState>()(
                   totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + fullReply.length),
                 },
               });
+              console.log(`✅ 第 ${round + 1} 轮获得最终文本回答`);
               break;
             }
+          }
 
-            // 最后一轮检查：如果还有工具调用但已达最大轮数
-            if (round === MAX_TOOL_CALL_ROUNDS - 1) {
-              console.warn('⚠️ 达到最大工具调用轮数，强制结束');
+          // 兜底：如果循环结束仍无最终文本回答，补发一次纯聊天请求
+          if (!finalReply && finalTextMsgId === null) {
+            console.warn('⚠️ 工具调用循环结束无文本回答，补发纯聊天请求...');
+
+            const fallbackMsg: AgentMessage = {
+              id: uid(),
+              groupId,
+              role: 'assistant',
+              type: 'text',
+              status: 'streaming',
+              content: '',
+            };
+            addMessage(fallbackMsg);
+            finalTextMsgId = fallbackMsg.id;
+
+            try {
+              const fbResponse = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                  model: 'glm-4-flash',
+                  messages: currentPayload,
+                  stream: true,
+                }),
+                signal: abortController.signal,
+              });
+
+              if (fbResponse.ok) {
+                const fbReader = fbResponse.body?.getReader();
+                if (fbReader) {
+                  const decoder = new TextDecoder('utf-8');
+                  let fbReply = '';
+                  while (true) {
+                    const { done, value } = await fbReader.read();
+                    if (done) break;
+                    const chunkStr = decoder.decode(value, { stream: true });
+                    for (const line of chunkStr.split('\n')) {
+                      if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
+                      const jsonStr = line.replace('data:', '').trim();
+                      if (!jsonStr) continue;
+                      try {
+                        const data = JSON.parse(jsonStr) as APIResponse;
+                        const char = data.choices?.[0]?.delta?.content;
+                        if (char) {
+                          fbReply += char;
+                          updateMessage(fallbackMsg.id, { content: fbReply });
+                        }
+                      } catch { /* skip */ }
+                    }
+                  }
+                  updateMessage(fallbackMsg.id, { status: 'success' });
+                  finalReply = fbReply;
+                }
+              }
+            } catch (fbErr) {
+              updateMessage(fallbackMsg.id, {
+                status: 'error',
+                content: '抱歉，工具查询完成但生成回答时出错了，请重试。',
+              });
             }
+
+            set({
+              tokenUsage: {
+                promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
+                completionTokens: finalReply.length,
+                totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + finalReply.length),
+              },
+            });
           }
 
           // ====== 阶段四：检查是否需要摘要 ======
