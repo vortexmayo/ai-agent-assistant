@@ -7,7 +7,6 @@ import {
   type KnowledgeBase,
   type MCPServer,
   type TokenUsage,
-  type RAGSearchResult,
 } from '../types/chat';
 
 // ========== 常量配置 ==========
@@ -20,24 +19,23 @@ const SUMMARY_THRESHOLD = 15;
 const SUMMARY_COUNT = 8;
 const SUMMARY_DEBOUNCE_MS = 3000;
 
-// ========== 模拟知识库数据 ==========
-const MOCK_KNOWLEDGE_BASE: Record<string, string> = {
-  '项目架构': '本项目采用 React 19 + TypeScript + Zustand + TailwindCSS 4 技术栈，使用 Vite 7 作为构建工具。项目分为三层：类型定义层(types/)、状态管理层(store/)、UI组件层(components/)。',
-  'Agent 协议': 'Agent 消息协议定义了四种消息类型：text(文本回复)、thought(思考过程)、tool_call(工具调用)、tool_result(工具结果)。每条消息包含 id、groupId、role、type、status 等字段，支持完整的对话链路追踪。',
-  'MCP 介绍': 'MCP(Model Context Protocol) 是一种标准化的工具调用协议，允许 AI 模型与外部工具和服务交互。常见的 MCP Server 包括：文件系统操作、GitHub API、数据库查询等。',
-  'RAG 原理': 'RAG(检索增强生成) 是一种将外部知识库与 AI 模型结合的技术。当用户提问时，系统先从知识库中检索相关文档片段，然后将检索结果作为上下文提供给模型，从而生成更准确、更专业的回答。',
-  'Zustand 用法': 'Zustand 是一个轻量级的 React 状态管理库。使用 create() 函数创建 store，支持 persist 中间件实现本地持久化。通过 selector 模式可以精确订阅需要的状态，避免不必要的重渲染。',
-  'TailwindCSS': 'TailwindCSS 是一个实用优先的 CSS 框架，通过组合原子化类名来快速构建界面。v4 版本引入了 @import "tailwindcss" 的零配置方式，支持 JIT 编译和任意值语法。',
-};
+// ========== MCP 代理服务配置 ==========
+const MCP_PROXY_URL = 'http://localhost:3001';
+const MAX_TOOL_CALL_ROUNDS = 5; // 最大工具调用轮数，防止无限循环
 
-// ========== 模拟文件系统 ==========
-const MOCK_FILE_SYSTEM: Record<string, string> = {
-  '/src/App.tsx': 'import { ChatInput } from \'./components/ChatInput\';\nimport { useChatStore } from \'./store/useChatStore\';\nimport MessageList from \'./components/MessageList\';\n\nexport default function App() {\n  // 主应用组件，负责三栏布局和状态管理\n  return <div>...</div>;\n}',
-  '/src/types/chat.ts': 'export type MessageStatus = \'pending\' | \'streaming\' | \'success\' | \'error\';\nexport type MessageType = \'text\' | \'thought\' | \'tool_call\' | \'tool_result\';\nexport interface AgentMessage { id: string; groupId: string; ... }',
-  '/package.json': '{ "name": "ai-agent-assistant", "version": "0.0.0", "dependencies": { "react": "^19.2.0", "zustand": "^5.0.11" } }',
-};
+// ========== MCP 工具定义类型（与代理服务返回格式一致） ==========
+interface MCPToolDef {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: string;
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
 
-// ========== 模拟 MCP Server 列表 ==========
+
+// ========== 默认 MCP Server 列表 ==========
 const DEFAULT_MCP_SERVERS: MCPServer[] = [
   { id: 'mcp-fs', name: '📁 本地文件系统', type: 'filesystem', status: 'connected', description: '读写项目文件' },
   { id: 'mcp-gh', name: '🐙 GitHub API', type: 'github', status: 'disconnected', description: '仓库操作与 PR 管理' },
@@ -163,51 +161,50 @@ async function requestSummary(messagesToSummarize: Array<{ role: string; content
   return data.choices?.[0]?.message?.content || '';
 }
 
-// ========== 模拟 RAG 检索 ==========
-function simulateRAGSearch(query: string): RAGSearchResult[] {
-  const results: RAGSearchResult[] = [];
-  const lowerQuery = query.toLowerCase();
+// ========== MCP 代理通信函数 ==========
 
-  for (const [title, content] of Object.entries(MOCK_KNOWLEDGE_BASE)) {
-    if (content.toLowerCase().includes(lowerQuery.slice(0, 4)) || title.includes(query.slice(0, 4))) {
-      results.push({
-        chunkId: uid(),
-        content: `【${title}】${content}`,
-        score: 0.85 + Math.random() * 0.14,
-        source: title,
-      });
-    }
+/** 检查 MCP 代理服务是否在线 */
+async function checkMCPHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${MCP_PROXY_URL}/api/mcp/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
   }
-
-  // 如果没有精确匹配，返回最相关的两条
-  if (results.length === 0) {
-    const entries = Object.entries(MOCK_KNOWLEDGE_BASE);
-    const shuffled = entries.sort(() => Math.random() - 0.5).slice(0, 2);
-    for (const [title, content] of shuffled) {
-      results.push({
-        chunkId: uid(),
-        content: `【${title}】${content}`,
-        score: 0.6 + Math.random() * 0.2,
-        source: title,
-      });
-    }
-  }
-
-  return results.slice(0, 3);
 }
 
-// ========== 模拟 MCP 文件操作 ==========
-function simulateMCPFileRead(path: string): { success: boolean; content?: string; error?: string } {
-  const normalizedPath = path.startsWith('/') ? path : '/' + path;
-  if (MOCK_FILE_SYSTEM[normalizedPath]) {
-    return { success: true, content: MOCK_FILE_SYSTEM[normalizedPath] };
-  }
-  return { success: false, error: `文件不存在: ${normalizedPath}` };
+/** 从 MCP 代理获取可用工具列表 */
+async function fetchMCPTools(): Promise<MCPToolDef[]> {
+  const res = await fetch(`${MCP_PROXY_URL}/api/mcp/tools`);
+  if (!res.ok) throw new Error('获取工具列表失败');
+  const data = await res.json();
+  return data.tools || [];
 }
 
-function simulateMCPListDirectory(_path: string): { success: boolean; files?: string[] } {
-  const allFiles = Object.keys(MOCK_FILE_SYSTEM);
-  return { success: true, files: allFiles };
+/** 将 MCP 工具定义转换为智谱 API 的 tools 格式 */
+function toZhipuTools(mcpTools: MCPToolDef[]) {
+  return mcpTools.map((tool) => ({
+    type: 'function' as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    },
+  }));
+}
+
+/** 执行真实的 MCP 工具调用 */
+async function executeMCPCall(toolName: string, args: Record<string, unknown>) {
+  const res = await fetch(`${MCP_PROXY_URL}/api/mcp/call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ toolName, args }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 // ========== 默认会话工厂 ==========
@@ -367,7 +364,7 @@ export const useChatStore = create<ChatState>()(
 
       // ========== 核心：发送消息（Agent 完整执行流程） ==========
       sendMessage: async (text: string) => {
-        const { currentSessionId, sessions, knowledgeBases, mcpServers, addMessage, updateMessage } = get();
+        const { currentSessionId, sessions, addMessage, updateMessage } = get();
 
         // 辅助：更新会话
         const updateSessionMeta = (updater: (msgs: AgentMessage[]) => AgentMessage[], newTitle?: string) => {
@@ -407,7 +404,7 @@ export const useChatStore = create<ChatState>()(
         currentAbortController = abortController;
 
         try {
-          // ====== 阶段二：Agent 思考（模拟） ======
+          // ====== 阶段二：Agent 思考 ======
           const thoughtMsg: AgentMessage = {
             id: uid(),
             groupId,
@@ -418,249 +415,127 @@ export const useChatStore = create<ChatState>()(
           };
           addMessage(thoughtMsg);
 
-          // 获取启用的知识库和 MCP Server
-          const enabledKBs = knowledgeBases.filter((kb) => kb.enabled);
-          const connectedMCPs = mcpServers.filter((srv) => srv.status === 'connected');
-
-          // 根据用户意图构建思考内容
-          const shouldSearchKB = enabledKBs.length > 0 &&
-            (text.includes('怎么') || text.includes('什么') || text.includes('如何') ||
-             text.includes('介绍') || text.includes('原理') || text.includes('架构'));
-          const shouldUseMCP = connectedMCPs.length > 0 &&
-            (text.includes('文件') || text.includes('代码') || text.includes('读取') ||
-             text.includes('查看') || text.includes('目录') || text.includes('打开'));
+          // 检测 MCP 代理是否在线
+          const mcpOnline = await checkMCPHealth();
+          let mcpTools: MCPToolDef[] = [];
+          if (mcpOnline) {
+            try {
+              mcpTools = await fetchMCPTools();
+              console.log(`🔧 已加载 ${mcpTools.length} 个 MCP 工具:`, mcpTools.map((t) => t.name).join(', '));
+            } catch {
+              console.warn('⚠️ MCP 工具列表获取失败，以纯聊天模式运行');
+            }
+          }
 
           // 构建中文思考过程
-          let thoughtContent = '';
           const thoughtSteps: string[] = [];
-
-          thoughtSteps.push('🤔 **分析用户意图**：用户询问 "' + text + '"，我需要理解其核心需求。');
-
-          if (shouldSearchKB) {
-            thoughtSteps.push('📚 **决策**：该问题涉及专业知识，我需要检索知识库（RAG）来获取准确信息。已启用的知识库：' +
-              enabledKBs.map(kb => kb.name).join('、'));
-          }
-
-          if (shouldUseMCP) {
-            thoughtSteps.push('🔧 **决策**：该问题涉及项目文件操作，我需要通过 MCP 工具来访问文件系统。已连接的 MCP Server：' +
-              connectedMCPs.map(srv => srv.name).join('、'));
-          }
-
-          if (!shouldSearchKB && !shouldUseMCP) {
-            thoughtSteps.push('💡 **决策**：这是一个常规对话，直接基于我的知识进行回答即可。');
+          thoughtSteps.push(`🤔 **分析用户意图**：收到问题 "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"`);
+          if (mcpTools.length > 0) {
+            thoughtSteps.push(`🔧 **MCP 已就绪**：已连接 SQLite 数据库代理服务，可用工具：${mcpTools.map((t) => t.name).join('、')}`);
+            thoughtSteps.push('📋 **策略**：大模型将自主判断是否需要调用工具查询数据库。\n可查询的表：users（用户）、products（产品）、sales（销售）、tasks（任务）');
+          } else if (mcpOnline) {
+            thoughtSteps.push('⚠️ **MCP 工具加载异常**，以纯聊天模式回答');
           } else {
-            thoughtSteps.push('📋 **计划执行步骤**：\n1. 先通过工具获取必要信息\n2. 分析工具返回的数据\n3. 整合信息形成完整回答');
+            thoughtSteps.push('💡 **MCP 代理未启动**，以纯聊天模式回答。如需使用数据库查询功能，请先运行 `npm run mcp-server` 启动代理服务');
           }
+          updateMessage(thoughtMsg.id, { content: thoughtSteps.join('\n\n'), status: 'success' });
 
-          thoughtContent = thoughtSteps.join('\n\n');
-          updateMessage(thoughtMsg.id, { content: thoughtContent, status: 'success' });
+          // ====== 阶段三：工具调用循环（大模型自主决策 + 真实 MCP 执行） ======
+          const apiKey = import.meta.env.VITE_AI_API_KEY;
+          const allToolResults: Array<{ toolCallId: string; toolName: string; result: unknown }> = [];
 
-          // ====== 阶段三：执行工具调用（模拟 RAG + MCP） ======
-          const toolResults: Array<{ name: string; result: unknown }> = [];
+          // 构建初始消息 Payload
+          const latestSession = get().sessions.find((s) => s.id === currentSessionId);
+          const summary = latestSession?.summary || '';
+          let currentPayload = buildPayloadMessages(
+            get().sessions.find((s) => s.id === currentSessionId)?.messages || [],
+            summary,
+          );
 
-          if (shouldSearchKB && enabledKBs.length > 0) {
-            // RAG 知识库检索
-            const ragCallMsg: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'assistant',
-              type: 'tool_call',
-              status: 'streaming',
-              toolName: 'rag_search',
-              toolCallId: 'call_rag_' + uid(),
-              args: { query: text, knowledgeBases: enabledKBs.map(kb => kb.name) },
-            };
-            addMessage(ragCallMsg);
-
-            // 模拟检索延迟
-            await new Promise((r) => setTimeout(r, 600 + Math.random() * 800));
-
+          // 工具调用循环（最多 MAX_TOOL_CALL_ROUNDS 轮）
+          for (let round = 0; round < MAX_TOOL_CALL_ROUNDS; round++) {
             if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-            const searchResults = simulateRAGSearch(text);
-            updateMessage(ragCallMsg.id, { status: 'success' });
-
-            const ragResultMsg: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'tool',
-              type: 'tool_result',
-              status: 'success',
-              toolName: 'rag_search',
-              toolCallId: ragCallMsg.toolCallId,
-              result: { query: text, matches: searchResults.length, results: searchResults },
+            // 构建请求体（首轮带 tools，后续轮次根据情况决定）
+            const requestBody: Record<string, unknown> = {
+              model: 'glm-4-flash',
+              messages: currentPayload,
+              stream: true,
             };
-            addMessage(ragResultMsg);
-            toolResults.push({ name: 'rag_search', result: ragResultMsg.result });
-          }
+            if (mcpTools.length > 0 && round < MAX_TOOL_CALL_ROUNDS - 1) {
+              requestBody.tools = toZhipuTools(mcpTools);
+            }
 
-          if (shouldUseMCP && connectedMCPs.length > 0) {
-            // MCP 工具调用 — 根据意图选择操作
-            const isReadFile = text.includes('读取') || text.includes('查看内容') || text.includes('打开');
-            const isListDir = text.includes('目录') || text.includes('列出') || text.includes('文件列表');
-            const targetPath = extractPathFromText(text) || '/src/App.tsx';
+            console.log(`🔄 第 ${round + 1} 轮模型请求，Payload ${currentPayload.length} 条消息，工具 ${mcpTools.length} 个`);
 
-            const mcpToolName = isReadFile ? 'mcp_read_file' : isListDir ? 'mcp_list_directory' : 'mcp_read_file';
-            const mcpCallMsg: AgentMessage = {
+            const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify(requestBody),
+              signal: abortController.signal,
+            });
+
+            if (!response.ok) {
+              const errorBody = await response.text();
+              console.error('API 请求失败:', response.status, errorBody);
+              throw new Error(`API 请求失败: ${response.status} — ${errorBody}`);
+            }
+
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('无法读取响应流');
+
+            // 累积本轮结果
+            let fullReply = '';
+            const toolCallsAcc: Map<number, { id: string; name: string; arguments: string }> = new Map();
+            let finishReason = '';
+            const aiTextMsg: AgentMessage = {
               id: uid(),
               groupId,
               role: 'assistant',
-              type: 'tool_call',
-              status: 'streaming',
-              toolName: mcpToolName,
-              toolCallId: 'call_mcp_' + uid(),
-              args: isListDir ? { path: '/' } : { path: targetPath },
-            };
-            addMessage(mcpCallMsg);
-
-            await new Promise((r) => setTimeout(r, 400 + Math.random() * 600));
-            if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-            updateMessage(mcpCallMsg.id, { status: 'success' });
-
-            const mcpResult = isListDir
-              ? simulateMCPListDirectory('/')
-              : simulateMCPFileRead(targetPath);
-
-            const mcpErrMsg = !mcpResult.success && 'error' in mcpResult ? mcpResult.error : undefined;
-            const mcpResultMsg: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'tool',
-              type: 'tool_result',
-              status: mcpResult.success ? 'success' : 'error',
-              toolName: mcpToolName,
-              toolCallId: mcpCallMsg.toolCallId,
-              result: mcpResult,
-              error: mcpErrMsg,
-            };
-            addMessage(mcpResultMsg);
-            toolResults.push({ name: mcpToolName, result: mcpResult });
-          }
-
-          // ====== 阶段四：综合思考——基于工具结果形成回答 ======
-          if (toolResults.length > 0) {
-            const synthesisThought: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'assistant',
-              type: 'thought',
+              type: 'text',
               status: 'streaming',
               content: '',
             };
-            addMessage(synthesisThought);
+            addMessage(aiTextMsg);
 
-            await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
-            if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            const decoder = new TextDecoder('utf-8');
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
 
-            let synthesisContent = '🔍 **分析工具返回结果**：\n\n';
-            for (const tr of toolResults) {
-              if (tr.name === 'rag_search') {
-                const r = tr.result as { matches?: number; results?: RAGSearchResult[] };
-                synthesisContent += `- 知识库检索到 **${r?.matches || 0}** 条相关文档，正在整合信息...\n`;
-              } else if (tr.name === 'mcp_read_file') {
-                const r = tr.result as { success?: boolean };
-                synthesisContent += r?.success
-                  ? '- 文件读取成功，已获取文件内容用于分析。\n'
-                  : '- 文件读取失败，将基于已有知识回答。\n';
-              } else if (tr.name === 'mcp_list_directory') {
-                const r = tr.result as { files?: string[] };
-                synthesisContent += `- 目录扫描完成，共找到 **${r?.files?.length || 0}** 个文件。\n`;
-              }
-            }
-            synthesisContent += '\n✅ **信息收集完毕**，现在整合所有数据，生成最终回答...';
-            updateMessage(synthesisThought.id, { content: synthesisContent, status: 'success' });
-          }
+              const chunkStr = decoder.decode(value, { stream: true });
+              const lines = chunkStr.split('\n');
 
-          // ====== 阶段五：调用大模型生成最终回答 ======
-          const aiTextMsg: AgentMessage = {
-            id: uid(),
-            groupId,
-            role: 'assistant',
-            type: 'text',
-            status: 'streaming',
-            content: '',
-          };
-          addMessage(aiTextMsg);
-
-          const latestSession = get().sessions.find((s) => s.id === currentSessionId);
-          const allMsgs = latestSession?.messages || [];
-          const summary = latestSession?.summary || '';
-          console.log('📋 当前会话消息数:', allMsgs.length, '摘要长度:', summary.length);
-          console.log('📋 消息列表:', allMsgs.map(m => `${m.role}:${m.type}:${m.content?.slice(0, 30)}`));
-          const payload = buildPayloadMessages(allMsgs, summary);
-          console.log('📤 最终 Payload 消息数:', payload.length);
-
-          const apiKey = import.meta.env.VITE_AI_API_KEY;
-          console.log('🔑 API Key 已加载:', apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : '❌ 未配置');
-
-          const requestBody = {
-            model: 'glm-4-flash',
-            messages: payload,
-            stream: true,
-          };
-
-          const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify(requestBody),
-            signal: abortController.signal,
-          });
-
-          if (!response.ok) {
-            const errorBody = await response.text();
-            console.error('API 请求失败:', response.status, errorBody);
-            console.log('请求 Payload:', JSON.stringify({ model: 'glm-4-flash', messages: payload.slice(0, 3), stream: true }, null, 2));
-            throw new Error(`API 请求失败: ${response.status} — ${errorBody}`);
-          }
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('无法读取响应流');
-
-          const decoder = new TextDecoder('utf-8');
-          let fullReply = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunkStr = decoder.decode(value, { stream: true });
-            const lines = chunkStr.split('\n');
-
-            for (const line of lines) {
-              if (line.startsWith('data:') && !line.includes('[DONE]')) {
+              for (const line of lines) {
+                if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
                 const jsonStr = line.replace('data:', '').trim();
                 if (!jsonStr) continue;
+
                 try {
                   const data = JSON.parse(jsonStr) as APIResponse;
                   const delta = data.choices?.[0]?.delta;
+                  finishReason = data.choices?.[0]?.finish_reason || finishReason;
 
-                  // 检查是否有 tool_calls
+                  // 累积 tool_calls 片段（SSE 可能分包传输）
                   if (delta?.tool_calls) {
                     for (const tc of delta.tool_calls) {
-                      if (tc.function?.name) {
-                        // 模型主动发起了工具调用
-                        const tcMsg: AgentMessage = {
-                          id: uid(),
-                          groupId,
-                          role: 'assistant',
-                          type: 'tool_call',
-                          status: 'success',
-                          toolName: tc.function.name,
-                          toolCallId: tc.id || uid(),
-                          args: tc.function.arguments || '{}',
-                        };
-                        addMessage(tcMsg);
+                      const idx = tc.index ?? 0;
+                      if (!toolCallsAcc.has(idx)) {
+                        toolCallsAcc.set(idx, { id: tc.id || '', name: '', arguments: '' });
                       }
+                      const acc = toolCallsAcc.get(idx)!;
+                      if (tc.id) acc.id = tc.id;
+                      if (tc.function?.name) acc.name += tc.function.name;
+                      if (tc.function?.arguments) acc.arguments += tc.function.arguments;
                     }
                   }
 
-                  // 文本内容
-                  const char = delta?.content;
-                  if (char) {
-                    fullReply += char;
+                  // 流式文本
+                  if (delta?.content) {
+                    fullReply += delta.content;
                     updateMessage(aiTextMsg.id, { content: fullReply });
                   }
                 } catch {
@@ -668,21 +543,114 @@ export const useChatStore = create<ChatState>()(
                 }
               }
             }
+
+            // 本轮结束：判断是否有工具调用需要执行
+            if (toolCallsAcc.size > 0) {
+              // 删除空文本消息（模型只返回了工具调用，没有文本）
+              if (!fullReply) {
+                updateMessage(aiTextMsg.id, { status: 'success', content: '' });
+              }
+
+              // 展示并执行每一个工具调用
+              const roundResults: Array<{ toolCallId: string; toolName: string; result: unknown }> = [];
+
+              for (const [, tc] of toolCallsAcc) {
+                console.log(`🔧 模型调用工具: ${tc.name}`, tc.arguments.slice(0, 200));
+
+                // 展示 tool_call 消息
+                const tcMsgId = uid();
+                const tcMsg: AgentMessage = {
+                  id: tcMsgId,
+                  groupId,
+                  role: 'assistant',
+                  type: 'tool_call',
+                  status: 'streaming',
+                  toolName: tc.name,
+                  toolCallId: tc.id,
+                  args: tc.arguments,
+                };
+                addMessage(tcMsg);
+
+                // 执行真实 MCP 调用
+                try {
+                  let parsedArgs: Record<string, unknown> = {};
+                  try { parsedArgs = JSON.parse(tc.arguments); } catch { /* 参数可能为空 */ }
+
+                  const mcpRes = await executeMCPCall(tc.name, parsedArgs);
+                  updateMessage(tcMsgId, { status: 'success' });
+
+                  const resultMsg: AgentMessage = {
+                    id: uid(),
+                    groupId,
+                    role: 'tool',
+                    type: 'tool_result',
+                    status: 'success',
+                    toolName: tc.name,
+                    toolCallId: tc.id,
+                    result: mcpRes.result,
+                  };
+                  addMessage(resultMsg);
+                  roundResults.push({ toolCallId: tc.id, toolName: tc.name, result: mcpRes.result });
+                } catch (err) {
+                  updateMessage(tcMsgId, { status: 'error', error: (err as Error).message });
+                  const errMsg: AgentMessage = {
+                    id: uid(),
+                    groupId,
+                    role: 'tool',
+                    type: 'tool_result',
+                    status: 'error',
+                    toolName: tc.name,
+                    toolCallId: tc.id,
+                    error: (err as Error).message,
+                  };
+                  addMessage(errMsg);
+                  roundResults.push({ toolCallId: tc.id, toolName: tc.name, result: { error: (err as Error).message } });
+                }
+              }
+
+              allToolResults.push(...roundResults);
+
+              // 更新 Payload：追加 assistant tool_calls 和 tool results
+              const assistantToolCallMsg = {
+                role: 'assistant' as const,
+                content: null,
+                tool_calls: Array.from(toolCallsAcc.entries()).map(([, tc]) => ({
+                  id: tc.id,
+                  type: 'function' as const,
+                  function: { name: tc.name, arguments: tc.arguments },
+                })),
+              };
+              currentPayload.push(assistantToolCallMsg as unknown as { role: string; content: string });
+
+              for (const rr of roundResults) {
+                currentPayload.push({
+                  role: 'tool',
+                  tool_call_id: rr.toolCallId,
+                  content: JSON.stringify(rr.result),
+                } as unknown as { role: string; content: string });
+              }
+
+              console.log(`✅ 第 ${round + 1} 轮完成，执行了 ${toolCallsAcc.size} 个工具调用，准备下一轮...`);
+            } else {
+              // 没有工具调用，标记完成并退出循环
+              updateMessage(aiTextMsg.id, { status: 'success' });
+              set({
+                tokenUsage: {
+                  promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
+                  completionTokens: fullReply.length,
+                  totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + fullReply.length),
+                },
+              });
+              break;
+            }
+
+            // 最后一轮检查：如果还有工具调用但已达最大轮数
+            if (round === MAX_TOOL_CALL_ROUNDS - 1) {
+              console.warn('⚠️ 达到最大工具调用轮数，强制结束');
+            }
           }
 
-          // 标记文本消息完成
-          updateMessage(aiTextMsg.id, { status: 'success' });
-
-          // 更新 Token 用量（模拟）
-          set({
-            tokenUsage: {
-              promptTokens: Math.round(fullReply.length * 0.8),
-              completionTokens: fullReply.length,
-              totalTokens: Math.round(fullReply.length * 1.8),
-            },
-          });
-
-          // ====== 阶段六：检查是否需要摘要 ======
+          // ====== 阶段四：检查是否需要摘要 ======
           const updatedSession = get().sessions.find((s) => s.id === currentSessionId);
           if (updatedSession && updatedSession.messages.length >= SUMMARY_THRESHOLD) {
             if (summaryDebounceTimer) clearTimeout(summaryDebounceTimer);
@@ -699,7 +667,7 @@ export const useChatStore = create<ChatState>()(
           }
         } catch (error: unknown) {
           if (error instanceof DOMException && error.name === 'AbortError') {
-            // 用户中断
+            // 用户主动中断
           } else {
             console.error('请求失败:', error);
             const errMsg: AgentMessage = {
@@ -708,7 +676,7 @@ export const useChatStore = create<ChatState>()(
               role: 'assistant',
               type: 'text',
               status: 'error',
-              content: '❌ 抱歉，网络连接出现问题，请稍后重试。',
+              content: '❌ 抱歉，请求出现问题：' + ((error as Error).message || '未知错误'),
             };
             addMessage(errMsg);
           }
@@ -727,8 +695,3 @@ export const useChatStore = create<ChatState>()(
   ),
 );
 
-// ========== 辅助：从文本中提取文件路径 ==========
-function extractPathFromText(text: string): string | null {
-  const match = text.match(/\/[a-zA-Z0-9_\/.-]+\.[a-zA-Z]+/);
-  return match ? match[0] : null;
-}

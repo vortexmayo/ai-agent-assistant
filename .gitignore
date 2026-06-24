@@ -21,4 +21,10 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
+# Local database
+test.db
+
+# Documentation temp files
+*.docx
+~$*.docx
+*.pdf
