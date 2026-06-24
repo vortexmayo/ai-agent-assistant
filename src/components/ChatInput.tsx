@@ -6,11 +6,12 @@ const SpeechRecognitionAPI =
 
 interface ChatInputProps {
   onSend: (text: string) => void;
+  onStop?: () => void; // 新增：停止 AI 生成的回调
   disabled?: boolean; // 加个问号，表示这个属性是“可选的”
 }
  
 
-export const ChatInput = ({ onSend, disabled = false }: ChatInputProps) => {
+export const ChatInput = ({ onSend, onStop, disabled = false }: ChatInputProps) => {
   const [text, setText] = useState('');
   const [isRecording, setIsRecording] = useState(false); // 记录是否正在录音
 
@@ -138,17 +139,27 @@ export const ChatInput = ({ onSend, disabled = false }: ChatInputProps) => {
         {isRecording ? '🎙️' : '🎤'}
       </button>
 
-      {/* 发送按钮：为了方便点击发送，顺手加上 */}
-      <button
-        onClick={() => {
-          if (text.trim()) {
-            handleDebouncedSend(text);
-          }
-        }}
-        className="p-3 text-white transition-colors bg-blue-500 shrink-0 rounded-xl hover:bg-blue-600"
-      >
-        发送
-      </button>
+      {/* 停止生成按钮：AI 正在回复时显示 */}
+      {disabled ? (
+        <button
+          onClick={onStop}
+          className="p-3 text-white transition-colors bg-red-500 shrink-0 rounded-xl hover:bg-red-600 animate-pulse flex items-center gap-1.5"
+        >
+          <span>⏹</span> 停止
+        </button>
+      ) : (
+        /* 发送按钮：为了方便点击发送，顺手加上 */
+        <button
+          onClick={() => {
+            if (text.trim()) {
+              handleDebouncedSend(text);
+            }
+          }}
+          className="p-3 text-white transition-colors bg-blue-500 shrink-0 rounded-xl hover:bg-blue-600"
+        >
+          发送
+        </button>
+      )}
     </div>
   );
 };
