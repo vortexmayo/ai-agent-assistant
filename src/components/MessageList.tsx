@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import type { AgentMessage } from '../types/chat';
 import { TextBubble } from './TextBubble';
 import { ThoughtNode } from './ThoughtNode';
@@ -32,6 +32,8 @@ const BOTTOM_THRESHOLD = 80;
 export default function MessageList({ messages, showThoughtProcess = true, scrollContainerRef }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isUserScrollingUpRef = useRef(false);
+  const rafIdRef = useRef<number>(0);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   /** 判断滚动容器是否处于底部附近 */
   const isNearBottom = useCallback(() => {
@@ -46,13 +48,15 @@ export default function MessageList({ messages, showThoughtProcess = true, scrol
     messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'instant' });
   }, []);
 
-  // 监听用户手动滚动，判断是否离开底部
+  // 监听用户手动滚动，同步底部状态
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
 
     const handleScroll = () => {
-      isUserScrollingUpRef.current = !isNearBottom();
+      const atBottom = isNearBottom();
+      isUserScrollingUpRef.current = !atBottom;
+      setIsAtBottom(atBottom); // 驱动按钮显隐
     };
 
     el.addEventListener('scroll', handleScroll, { passive: true });
@@ -60,10 +64,20 @@ export default function MessageList({ messages, showThoughtProcess = true, scrol
   }, [isNearBottom]);
 
   // 消息变化时：仅在用户处于底部时自动跟随滚动
+  // requestAnimationFrame 确保 DOM 更新后再检测，同时避免短时间重复触发
   useEffect(() => {
-    if (isNearBottom()) {
-      scrollToBottom(true);
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
     }
+    rafIdRef.current = requestAnimationFrame(() => {
+      if (isNearBottom() && !isUserScrollingUpRef.current) {
+        scrollToBottom(true);
+        setIsAtBottom(true);
+      }
+    });
+    return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+    };
   }, [messages, isNearBottom, scrollToBottom]);
 
   // 将消息按 groupId 分组
@@ -87,8 +101,8 @@ export default function MessageList({ messages, showThoughtProcess = true, scrol
         <div ref={messagesEndRef} className="h-0" />
       </div>
 
-      {/* "回到底部"浮动按钮：仅在用户上拉离开底部时显示 */}
-      {!isNearBottom() && (
+      {/* "回到底部"浮动按钮：用户上拉离开底部时显示 */}
+      {!isAtBottom && (
         <button
           onClick={handleBackToBottom}
           className="sticky bottom-4 float-right z-20 flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-full shadow-lg text-xs text-slate-500 hover:text-slate-700 hover:border-slate-300 transition-all animate-in fade-in"
