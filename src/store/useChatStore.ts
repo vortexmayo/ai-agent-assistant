@@ -21,7 +21,6 @@ const SUMMARY_DEBOUNCE_MS = 3000;
 
 // ========== MCP 代理服务配置 ==========
 const MCP_PROXY_URL = 'http://localhost:3001';
-const MAX_TOOL_CALL_ROUNDS = 5; // 最大工具调用轮数，防止无限循环
 
 // ========== MCP 工具定义类型（与代理服务返回格式一致） ==========
 interface MCPToolDef {
@@ -440,10 +439,9 @@ export const useChatStore = create<ChatState>()(
           }
           updateMessage(thoughtMsg.id, { content: thoughtSteps.join('\n\n'), status: 'success' });
 
-          // ====== 阶段三：工具调用循环（大模型自主决策 + 真实 MCP 执行） ======
+          // ====== 阶段三：工具调用（探索 → 总结 两阶段） ======
           const apiKey = import.meta.env.VITE_AI_API_KEY;
 
-          // 构建初始消息 Payload
           const latestSession = get().sessions.find((s) => s.id === currentSessionId);
           const summary = latestSession?.summary || '';
           let currentPayload = buildPayloadMessages(
@@ -451,219 +449,140 @@ export const useChatStore = create<ChatState>()(
             summary,
           );
 
-          let finalTextMsgId: string | null = null;
-          let finalReply = '';
+          // ====== 阶段3A：工具探索（最多3轮，模型自主探索数据库） ======
+          const MAX_EXPLORE_ROUNDS = 3;
+          let toolCallHappened = false;
 
-          // 工具调用循环（最多 MAX_TOOL_CALL_ROUNDS 轮）
-          for (let round = 0; round < MAX_TOOL_CALL_ROUNDS; round++) {
+          for (let round = 0; round < MAX_EXPLORE_ROUNDS; round++) {
             if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-            const isLastRound = round === MAX_TOOL_CALL_ROUNDS - 1;
-
-            // 构建请求体：最后一轮不带 tools，强制模型输出文本回答
             const requestBody: Record<string, unknown> = {
               model: 'glm-4-flash',
               messages: currentPayload,
               stream: true,
             };
-            if (mcpTools.length > 0 && !isLastRound) {
+            if (mcpTools.length > 0) {
               requestBody.tools = toZhipuTools(mcpTools);
             }
 
-            console.log(`🔄 第 ${round + 1} 轮模型请求，Payload ${currentPayload.length} 条消息${!isLastRound ? '，携带工具' : '，纯文本模式（最后一轮）'}`);
+            console.log(`🔍 探索轮 ${round + 1}/${MAX_EXPLORE_ROUNDS}，Payload ${currentPayload.length} 条`);
 
             const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-              },
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
               body: JSON.stringify(requestBody),
               signal: abortController.signal,
             });
 
             if (!response.ok) {
-              const errorBody = await response.text();
-              console.error('API 请求失败:', response.status, errorBody);
-              throw new Error(`API 请求失败: ${response.status} — ${errorBody}`);
+              const errBody = await response.text();
+              console.error('API 请求失败:', response.status, errBody);
+              throw new Error(`API 请求失败: ${response.status}`);
             }
 
             const reader = response.body?.getReader();
             if (!reader) throw new Error('无法读取响应流');
 
-            // 累积本轮结果
+            // 解析 SSE 流，累积文本 + tool_calls
             let fullReply = '';
             const toolCallsAcc: Map<number, { id: string; name: string; arguments: string }> = new Map();
-            let finishReason = '';
-            let aiTextMsgId: string | null = null;
-
-            // 只在可能产生文本时提前创建文本消息（首轮或最后一轮）
-            if (round === 0 || isLastRound || !requestBody.tools) {
-              const aiTextMsg: AgentMessage = {
-                id: uid(),
-                groupId,
-                role: 'assistant',
-                type: 'text',
-                status: 'streaming',
-                content: '',
-              };
-              aiTextMsgId = aiTextMsg.id;
-              addMessage(aiTextMsg);
-            }
-
             const decoder = new TextDecoder('utf-8');
+
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
-
-              const chunkStr = decoder.decode(value, { stream: true });
-              const lines = chunkStr.split('\n');
+              const lines = decoder.decode(value, { stream: true }).split('\n');
 
               for (const line of lines) {
                 if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
                 const jsonStr = line.replace('data:', '').trim();
                 if (!jsonStr) continue;
-
                 try {
                   const data = JSON.parse(jsonStr) as APIResponse;
                   const delta = data.choices?.[0]?.delta;
-                  finishReason = data.choices?.[0]?.finish_reason || finishReason;
-
-                  // 累积 tool_calls 片段
+                  if (delta?.content) fullReply += delta.content;
                   if (delta?.tool_calls) {
                     for (const tc of delta.tool_calls) {
                       const idx = tc.index ?? 0;
-                      if (!toolCallsAcc.has(idx)) {
-                        toolCallsAcc.set(idx, { id: tc.id || '', name: '', arguments: '' });
-                      }
+                      if (!toolCallsAcc.has(idx)) toolCallsAcc.set(idx, { id: tc.id || '', name: '', arguments: '' });
                       const acc = toolCallsAcc.get(idx)!;
                       if (tc.id) acc.id = tc.id;
                       if (tc.function?.name) acc.name += tc.function.name;
                       if (tc.function?.arguments) acc.arguments += tc.function.arguments;
                     }
                   }
-
-                  // 流式文本
-                  if (delta?.content) {
-                    // 如果之前没有创建文本消息（中间轮次突然有了文本），补建一个
-                    if (!aiTextMsgId) {
-                      const aiTextMsg: AgentMessage = {
-                        id: uid(),
-                        groupId,
-                        role: 'assistant',
-                        type: 'text',
-                        status: 'streaming',
-                        content: '',
-                      };
-                      aiTextMsgId = aiTextMsg.id;
-                      addMessage(aiTextMsg);
-                    }
-                    fullReply += delta.content;
-                    updateMessage(aiTextMsgId, { content: fullReply });
-                  }
-                } catch {
-                  // JSON 解析失败，跳过
-                }
+                } catch { /* skip parse errors */ }
               }
             }
 
-            // 本轮结束：判断结果类型
+            // 本轮结果处理
             if (toolCallsAcc.size > 0) {
-              // --- 模型返回了工具调用 ---
-              // 如果有文本伴随（如"让我查一下..."），标记为完成
-              if (aiTextMsgId && fullReply) {
-                updateMessage(aiTextMsgId, { status: 'success' });
-                finalReply = fullReply;
-                finalTextMsgId = aiTextMsgId;
-              } else if (aiTextMsgId && !fullReply) {
-                // 空文本消息，隐藏它（设为空内容、成功状态）
-                updateMessage(aiTextMsgId, { status: 'success', content: '' });
+              toolCallHappened = true;
+
+              // 如果有伴随文字（如"让我查一下..."），保留展示
+              if (fullReply) {
+                addMessage({
+                  id: uid(), groupId, role: 'assistant', type: 'text',
+                  status: 'success', content: fullReply,
+                } as AgentMessage);
               }
 
-              // 展示并执行每一个工具调用
+              // 展示并执行工具
               const roundResults: Array<{ toolCallId: string; toolName: string; result: unknown }> = [];
 
               for (const [, tc] of toolCallsAcc) {
-                console.log(`🔧 模型调用工具: ${tc.name}`, tc.arguments.slice(0, 200));
+                console.log(`🔧 调用: ${tc.name}`, tc.arguments.slice(0, 150));
 
                 const tcMsgId = uid();
-                const tcMsg: AgentMessage = {
-                  id: tcMsgId,
-                  groupId,
-                  role: 'assistant',
-                  type: 'tool_call',
-                  status: 'streaming',
-                  toolName: tc.name,
-                  toolCallId: tc.id,
-                  args: tc.arguments,
-                };
-                addMessage(tcMsg);
+                addMessage({
+                  id: tcMsgId, groupId, role: 'assistant', type: 'tool_call',
+                  status: 'streaming', toolName: tc.name, toolCallId: tc.id, args: tc.arguments,
+                } as AgentMessage);
 
                 try {
                   let parsedArgs: Record<string, unknown> = {};
-                  try { parsedArgs = JSON.parse(tc.arguments); } catch { /* 允许空参数 */ }
-
+                  try { parsedArgs = JSON.parse(tc.arguments); } catch { /* empty */ }
                   const mcpRes = await executeMCPCall(tc.name, parsedArgs);
                   updateMessage(tcMsgId, { status: 'success' });
 
-                  const resultMsg: AgentMessage = {
-                    id: uid(),
-                    groupId,
-                    role: 'tool',
-                    type: 'tool_result',
-                    status: 'success',
-                    toolName: tc.name,
-                    toolCallId: tc.id,
-                    result: mcpRes.result,
-                  };
-                  addMessage(resultMsg);
+                  addMessage({
+                    id: uid(), groupId, role: 'tool', type: 'tool_result',
+                    status: 'success', toolName: tc.name, toolCallId: tc.id, result: mcpRes.result,
+                  } as AgentMessage);
                   roundResults.push({ toolCallId: tc.id, toolName: tc.name, result: mcpRes.result });
                 } catch (err) {
                   updateMessage(tcMsgId, { status: 'error', error: (err as Error).message });
-                  const errMsg: AgentMessage = {
-                    id: uid(),
-                    groupId,
-                    role: 'tool',
-                    type: 'tool_result',
-                    status: 'error',
-                    toolName: tc.name,
-                    toolCallId: tc.id,
-                    error: (err as Error).message,
-                  };
-                  addMessage(errMsg);
+                  addMessage({
+                    id: uid(), groupId, role: 'tool', type: 'tool_result',
+                    status: 'error', toolName: tc.name, toolCallId: tc.id, error: (err as Error).message,
+                  } as AgentMessage);
                   roundResults.push({ toolCallId: tc.id, toolName: tc.name, result: { error: (err as Error).message } });
                 }
               }
 
-              // 将工具调用和结果追加到 Payload，供下一轮使用
-              const assistantToolCallMsg = {
-                role: 'assistant' as const,
-                content: fullReply || null,
+              // 追加到 Payload
+              currentPayload.push({
+                role: 'assistant',
+                content: fullReply || '',
                 tool_calls: Array.from(toolCallsAcc.entries()).map(([, tc]) => ({
-                  id: tc.id,
-                  type: 'function' as const,
+                  id: tc.id, type: 'function' as const,
                   function: { name: tc.name, arguments: tc.arguments },
                 })),
-              };
-              currentPayload.push(assistantToolCallMsg as unknown as { role: string; content: string });
+              } as unknown as { role: string; content: string });
 
               for (const rr of roundResults) {
                 currentPayload.push({
-                  role: 'tool',
-                  tool_call_id: rr.toolCallId,
-                  content: JSON.stringify(rr.result),
+                  role: 'tool', tool_call_id: rr.toolCallId, content: JSON.stringify(rr.result),
                 } as unknown as { role: string; content: string });
               }
-
-              console.log(`✅ 第 ${round + 1} 轮完成，执行了 ${toolCallsAcc.size} 个工具调用`);
             } else {
-              // --- 模型返回了纯文本（最终回答） ---
-              if (aiTextMsgId) {
-                updateMessage(aiTextMsgId, { status: 'success' });
-                finalReply = fullReply;
-                finalTextMsgId = aiTextMsgId;
+              // 本轮无工具调用 → 模型已经给出了文本回答，直接结束
+              if (fullReply) {
+                addMessage({
+                  id: uid(), groupId, role: 'assistant', type: 'text',
+                  status: 'success', content: fullReply,
+                } as AgentMessage);
               }
-              // 更新 Token 用量
               set({
                 tokenUsage: {
                   promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
@@ -671,82 +590,82 @@ export const useChatStore = create<ChatState>()(
                   totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + fullReply.length),
                 },
               });
-              console.log(`✅ 第 ${round + 1} 轮获得最终文本回答`);
-              break;
+              break; // 已有回答，跳过后面的总结阶段
             }
           }
 
-          // 兜底：如果循环结束仍无最终文本回答，补发一次纯聊天请求
-          if (!finalReply && finalTextMsgId === null) {
-            console.warn('⚠️ 工具调用循环结束无文本回答，补发纯聊天请求...');
+          // ====== 阶段3B：最终总结（不带工具，强制生成文本回答） ======
+          // 只有当探索阶段发生工具调用且未获得最终回答时，才发总结请求
+          if (toolCallHappened) {
+            console.log('📝 发送最终总结请求（纯文本模式）...');
 
-            const fallbackMsg: AgentMessage = {
-              id: uid(),
-              groupId,
-              role: 'assistant',
-              type: 'text',
-              status: 'streaming',
-              content: '',
+            // 追加提示消息，引导模型基于工具结果生成回答
+            currentPayload.push({
+              role: 'user',
+              content: '请基于以上工具返回的数据，用自然语言给我一个完整、清晰的回答。',
+            } as { role: string; content: string });
+
+            const finalMsg: AgentMessage = {
+              id: uid(), groupId, role: 'assistant', type: 'text',
+              status: 'streaming', content: '',
             };
-            addMessage(fallbackMsg);
-            finalTextMsgId = fallbackMsg.id;
+            addMessage(finalMsg);
 
             try {
-              const fbResponse = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+              const finalRes = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${apiKey}`,
-                },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                 body: JSON.stringify({
                   model: 'glm-4-flash',
                   messages: currentPayload,
                   stream: true,
+                  // 不带 tools！强制文本输出
                 }),
                 signal: abortController.signal,
               });
 
-              if (fbResponse.ok) {
-                const fbReader = fbResponse.body?.getReader();
-                if (fbReader) {
+              if (finalRes.ok) {
+                const finalReader = finalRes.body?.getReader();
+                if (finalReader) {
                   const decoder = new TextDecoder('utf-8');
-                  let fbReply = '';
+                  let finalReply = '';
                   while (true) {
-                    const { done, value } = await fbReader.read();
+                    const { done, value } = await finalReader.read();
                     if (done) break;
-                    const chunkStr = decoder.decode(value, { stream: true });
-                    for (const line of chunkStr.split('\n')) {
+                    for (const line of decoder.decode(value, { stream: true }).split('\n')) {
                       if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
                       const jsonStr = line.replace('data:', '').trim();
                       if (!jsonStr) continue;
                       try {
-                        const data = JSON.parse(jsonStr) as APIResponse;
-                        const char = data.choices?.[0]?.delta?.content;
+                        const char = (JSON.parse(jsonStr) as APIResponse).choices?.[0]?.delta?.content;
                         if (char) {
-                          fbReply += char;
-                          updateMessage(fallbackMsg.id, { content: fbReply });
+                          finalReply += char;
+                          updateMessage(finalMsg.id, { content: finalReply });
                         }
                       } catch { /* skip */ }
                     }
                   }
-                  updateMessage(fallbackMsg.id, { status: 'success' });
-                  finalReply = fbReply;
+                  updateMessage(finalMsg.id, { status: 'success' });
+                  set({
+                    tokenUsage: {
+                      promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
+                      completionTokens: finalReply.length,
+                      totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + finalReply.length),
+                    },
+                  });
                 }
+              } else {
+                updateMessage(finalMsg.id, {
+                  status: 'error',
+                  content: '抱歉，分析工具数据时遇到了问题，请重试。',
+                });
               }
-            } catch (fbErr) {
-              updateMessage(fallbackMsg.id, {
+            } catch (finalErr) {
+              updateMessage(finalMsg.id, {
                 status: 'error',
-                content: '抱歉，工具查询完成但生成回答时出错了，请重试。',
+                content: '抱歉，生成最终回答时网络出现问题，请重试。',
               });
             }
-
-            set({
-              tokenUsage: {
-                promptTokens: Math.round(JSON.stringify(currentPayload).length / 2),
-                completionTokens: finalReply.length,
-                totalTokens: Math.round(JSON.stringify(currentPayload).length / 2 + finalReply.length),
-              },
-            });
           }
 
           // ====== 阶段四：检查是否需要摘要 ======
