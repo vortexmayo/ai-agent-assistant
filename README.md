@@ -1,8 +1,8 @@
 # 🤖 AI 智能体工作台 (AI Agent Workbench)
 
-> 从聊天框到智能体工作台 —— 具备思考过程可视化、真实 SQLite MCP 工具调用、Agent 消息协议追踪能力的 AI 前端平台。
+> 从聊天框到智能体工作台 —— 13 个 MCP 工具 • RAG 向量检索 • Agent 全链路可视化 • 真正的 AI 生产力平台
 
-![技术栈](https://img.shields.io/badge/React-19-61DAFB?logo=react) ![语言](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript) ![样式](https://img.shields.io/badge/TailwindCSS-4-06B6D4?logo=tailwindcss) ![状态管理](https://img.shields.io/badge/Zustand-5-433e38) ![构建](https://img.shields.io/badge/Vite-7-646CFF?logo=vite) ![MCP](https://img.shields.io/badge/MCP-SQLite-FF6B35)
+![技术栈](https://img.shields.io/badge/React-19-61DAFB?logo=react) ![语言](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript) ![样式](https://img.shields.io/badge/TailwindCSS-4-06B6D4?logo=tailwindcss) ![状态管理](https://img.shields.io/badge/Zustand-5-433e38) ![构建](https://img.shields.io/badge/Vite-7-646CFF?logo=vite) ![MCP](https://img.shields.io/badge/MCP-13_tools-FF6B35) ![RAG](https://img.shields.io/badge/RAG-Embedding-8B5CF6)
 
 ---
 
@@ -19,12 +19,19 @@
 - **状态管理**：每条消息具备 `pending → streaming → success → error` 生命周期
 - **多轮工具调用**：大模型自主决策调用哪些工具，支持最多 5 轮循环调用
 
-### 🗄️ SQLite MCP 工具调用（真实）
-- **真实数据库查询**：通过 Node.js BFF 代理服务连接本地 SQLite，执行真实的 SQL 操作
-- **5 个标准工具**：`list_tables`、`describe_table`、`read_query`、`write_query`、`create_table`
-- **Function Calling**：利用智谱 API 原生 tools/function calling，大模型自主决策调用时机和参数
-- **结果可视化**：查询结果以表格/JSON 格式展示，支持展开查看详情
-- **预置测试数据**：包含 users、products、sales、tasks 四张表共 22 条记录
+### 🔌 MCP 工具调用（13 个真实工具，4 大类别）
+
+| 类别 | 工具 | 数量 | 说明 |
+|------|------|------|------|
+| 🗄️ **SQLite 数据库** | `list_tables` `describe_table` `read_query` `write_query` `create_table` | 5 | 真实数据库 CRUD，Text-to-SQL 数据分析 |
+| 📁 **文件系统** | `fs_read_file` `fs_write_file` `fs_list_directory` `fs_search_files` | 4 | 项目文件读写搜索，支持 glob 模式 |
+| 🧠 **RAG 知识库** | `rag_index_path` `rag_search` `rag_list_indexed` | 3 | 智谱 Embedding API + 余弦相似度向量检索 |
+| 🐙 **GitHub API** | `github_get_file` | 1 | 公开仓库文件读取，无需认证 |
+
+- **Function Calling**：智谱 API 原生 tools 参数，大模型自主决策调用时机和参数
+- **两阶段执行**：探索轮（3 轮，带工具）→ 总结轮（1 轮，强制文本输出）
+- **结果可视化**：SQL 结果表格、RAG 文档片段（含来源和相似度）、文件内容高亮
+- **预置数据**：users/products/sales/tasks 四张表共 22 条记录
 
 ### 🎨 三栏工作台布局
 ```
@@ -36,8 +43,10 @@
 │  · 删除会话   │  │ 🧠 思考过程      │   │  └ 项目架构  │
 │              │  │ 🔧 工具调用      │   │             │
 │              │  │ ✅ 工具结果      │   │ 🔌 MCP服务  │
-│              │  │ 💬 最终回答      │   │  ├ 📁 文件  │
-│              │  └─────────────────┘   │  └ 🗄️ SQLite │
+│              │  │ 💬 最终回答      │   │  ├ 🗄️ SQLite │
+│              │  └─────────────────┘   │  ├ 📁 文件系统│
+│              │                        │  ├ 🧠 RAG    │
+│              │                        │  └ 🐙 GitHub │
 │              │                        │             │
 │              │  [输入框] [发送]       │ 📊 Token用量 │
 └──────────────┴────────────────────────┴─────────────┘
@@ -54,19 +63,20 @@
 ## 🏗️ 系统架构
 
 ```
-┌──────────────────────┐     HTTP      ┌──────────────────┐     sql.js    ┌──────────┐
-│   浏览器 (React)      │ ◄──────────▶ │   BFF 代理服务     │ ◄──────────▶ │  test.db │
-│                      │              │   server.js:3001  │              │  SQLite  │
-│  ┌────────────────┐  │              │                    │              │          │
-│  │ useChatStore   │  │  GET /api/   │  /mcp/tools       │   list_tables│  users   │
-│  │ · sendMessage  │──┼─────────────▶│  /mcp/call        │──read_query─▶│ products │
-│  │ · fetchMCPTools│  │  POST /api/  │  /mcp/health      │  write_query │  sales   │
-│  │ · executeMCPCall│◀┼──────────────│                    │◀─────────────│  tasks   │
-│  └────────────────┘  │              └──────────────────┘              └──────────┘
+┌──────────────────────┐     HTTP      ┌───────────────────────────────┐
+│   浏览器 (React)      │ ◄──────────▶ │   BFF 代理服务 (server.js)     │
+│                      │              │          :3001                │
+│  ┌────────────────┐  │              │                               │
+│  │ useChatStore   │  │  GET /api/   │  🗄️ SQLite (sql.js) — 5 工具  │
+│  │ · sendMessage  │──┼─────────────▶│  📁 文件系统 (fs) — 4 工具    │
+│  │ · fetchMCPTools│  │  POST /api/  │  🧠 RAG (embedding-2) — 3 工具│
+│  │ · executeMCPCall│◀┼──────────────│  🐙 GitHub (REST) — 1 工具    │
+│  └────────────────┘  │              └───────────────────────────────┘
 │                      │
 │  ┌────────────────┐  │    SSE 流式
 │  │ 智谱 GLM-4 API │◀─┼────────────  tools/function calling
 │  │ open.bigmodel  │──┼────────────▶  text / tool_calls
+│  │ embedding-2    │  │  RAG Embedding
 │  └────────────────┘  │
 └──────────────────────┘
 ```
@@ -80,9 +90,11 @@
 | 样式方案 | TailwindCSS 4 | 原子化 CSS，零配置 |
 | 状态管理 | Zustand 5 + persist | 轻量状态 + localStorage 持久化 |
 | Markdown | react-markdown + react-syntax-highlighter | 富文本渲染 + Prism 代码高亮 |
-| AI 接口 | 智谱 GLM-4-Flash | OpenAI 兼容 SSE 流式 API + Function Calling |
-| BFF 代理 | Express 5 + sql.js | Node.js 中间层，纯 JS SQLite（零原生编译） |
-| MCP 协议 | MCP SDK 1.x | 工具定义格式兼容 Model Context Protocol |
+| AI 接口 | 智谱 GLM-4-Flash | SSE 流式 API + Function Calling |
+| AI 嵌入 | 智谱 embedding-2 | 1024 维文本向量，用于 RAG 语义检索 |
+| BFF 代理 | Express 5 + sql.js | Node.js 中间层，13 个 MCP 工具 |
+| 文件搜索 | glob | 通配符模式匹配项目文件 |
+| RAG 引擎 | 自研 rag-engine.js | 分块→Embedding→余弦相似度→TopK |
 
 ## 🚀 快速开始
 
@@ -130,9 +142,10 @@ curl http://localhost:3001/api/mcp/health
 
 ```
 ai-agent-assistant/
-├── server.js                  # MCP BFF 代理服务（Express + sql.js）
-├── test.db                    # SQLite 测试数据库（自动生成）
-├── vite.config.ts             # Vite 配置
+├── server.js                  # MCP BFF 代理（13 工具·4 类别）
+├── rag-engine.js              # RAG 引擎（分块+Embedding+向量搜索）
+├── test.db                    # SQLite 测试数据库
+├── vite.config.ts
 ├── package.json
 ├── scripts/
 │   └── init-db.js             # 数据库初始化脚本
@@ -212,6 +225,28 @@ interface AgentMessage {
             3. 人体工学鼠标 — 总销售额 ¥995"
 ```
 
+### 🧠 RAG 知识库检索示例
+
+```
+用户: "帮我把 src 目录索引起来，然后找跟状态管理相关的代码"
+
+  ├─ [Tool Call] 🧠 rag_index_path { path: "./src" }
+  │     → 扫描 8 个文件 → 分块 → Embedding API → 向量入库
+  ├─ [Tool Result] ✅ 已完成索引，共生成 15 个向量块
+  │
+  ├─ [Tool Call] 🧠 rag_search { query: "状态管理 全局状态" }
+  │     → 查询向量化 → 余弦相似度计算 → TopK 排序
+  ├─ [Tool Result] ✅ [
+  │     { source: "src/store/useChatStore.ts", score: 0.94,
+  │       text: "使用 Zustand 的 create 方法创建 store..." },
+  │     { source: "src/App.tsx", score: 0.82,
+  │       text: "const sessions = useChatStore(s => s.sessions)..." }
+  │   ]
+  │
+  └─ [Text] 💬 "项目使用 Zustand 进行状态管理。核心代码在
+             useChatStore.ts，通过 create() 创建 store..."
+```
+
 ## 📦 NPM Scripts
 
 | 命令 | 说明 |
@@ -225,11 +260,14 @@ interface AgentMessage {
 
 ## 🔮 路线图
 
-- [x] 真实 SQLite MCP 工具调用（Function Calling）
-- [x] Agent 多轮工具调用循环
-- [x] 三栏工作台布局
-- [ ] 接入更多 MCP Server（文件系统、GitHub API）
-- [ ] 接入真实 RAG 后端（向量数据库 + Embedding）
+- [x] 真实 SQLite MCP（Function Calling）
+- [x] Agent 多轮工具调用（探索→总结两阶段）
+- [x] 文件系统 MCP（读写/列表/搜索 4 工具）
+- [x] 真实 RAG 后端（智谱 Embedding + 余弦相似度）
+- [x] GitHub API MCP（公开仓库读取）
+- [x] 三栏工作台 + 13 工具控制面板
+- [x] 智能滚动（用户上拉不打断）
+- [ ] 本地 Embedding 模型（消除 API 依赖）
 - [ ] 会话导出（Markdown / PDF）
 - [ ] 暗色模式
 - [ ] 多模型切换（GLM / DeepSeek / Qwen）
