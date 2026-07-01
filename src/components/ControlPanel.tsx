@@ -14,7 +14,6 @@ export const ControlPanel: React.FC = () => {
   const tokenUsage = useChatStore((s) => s.tokenUsage);
   const showThoughtProcess = useChatStore((s) => s.showThoughtProcess);
   const toggleKnowledgeBase = useChatStore((s) => s.toggleKnowledgeBase);
-  const toggleMCPServer = useChatStore((s) => s.toggleMCPServer);
   const toggleThoughtProcess = useChatStore((s) => s.toggleThoughtProcess);
 
   return (
@@ -70,38 +69,39 @@ export const ControlPanel: React.FC = () => {
         <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1">
           🔌 MCP 工具服务
         </h4>
-        <div className="space-y-2">
-          {mcpServers.map((srv) => (
-            <div
-              key={srv.id}
-              className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-50 transition-colors"
-            >
-              {/* 状态指示灯 */}
-              <span
-                className={`w-2 h-2 rounded-full shrink-0 ${
-                  srv.status === 'connected'
-                    ? 'bg-green-500 animate-pulse'
-                    : srv.status === 'connecting'
-                      ? 'bg-yellow-500'
-                      : 'bg-slate-300'
-                }`}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-slate-700 truncate">{srv.name}</div>
-                <div className="text-[10px] text-slate-400 truncate">{srv.description}</div>
-              </div>
-              <button
-                onClick={() => toggleMCPServer(srv.id)}
-                className={`text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors ${
-                  srv.status === 'connected'
-                    ? 'text-green-600 hover:bg-green-50'
-                    : 'text-slate-400 hover:bg-slate-100'
-                }`}
-              >
-                {srv.status === 'connected' ? '断开' : '连接'}
-              </button>
-            </div>
-          ))}
+        <div className="space-y-3">
+          {/* 🗄️ SQLite */}
+          <MCPServiceGroup
+            icon="🗄️"
+            name="SQLite 数据库"
+            desc="本地数据查询与分析"
+            connected={mcpServers.some(s => s.id === 'mcp-db' && s.status === 'connected')}
+            toolCount={5}
+          />
+          {/* 📁 文件系统 */}
+          <MCPServiceGroup
+            icon="📁"
+            name="文件系统 (FS)"
+            desc="项目文件读写与搜索"
+            connected={mcpServers.some(s => s.id === 'mcp-fs' && s.status === 'connected')}
+            toolCount={4}
+          />
+          {/* 🧠 RAG 知识库 */}
+          <MCPServiceGroup
+            icon="🧠"
+            name="RAG 知识库"
+            desc="Embedding 向量检索"
+            connected={mcpServers.some(s => s.id === 'mcp-rag' && s.status === 'connected')}
+            toolCount={3}
+          />
+          {/* 🐙 GitHub */}
+          <MCPServiceGroup
+            icon="🐙"
+            name="GitHub API"
+            desc="公开仓库文件读取"
+            connected={mcpServers.some(s => s.id === 'mcp-gh' && s.status === 'connected')}
+            toolCount={1}
+          />
         </div>
       </section>
 
@@ -176,3 +176,27 @@ export const ControlPanel: React.FC = () => {
     </aside>
   );
 };
+
+// ========== MCP 服务分组子组件 ==========
+
+interface MCPServiceGroupProps {
+  icon: string;
+  name: string;
+  desc: string;
+  connected: boolean;
+  toolCount: number;
+}
+
+const MCPServiceGroup: React.FC<MCPServiceGroupProps> = ({ icon, name, desc, connected, toolCount }) => (
+  <div className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-50 transition-colors">
+    <span className="text-base shrink-0">{icon}</span>
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs font-medium text-slate-700">{name}</span>
+        <span className="text-[9px] text-slate-400 bg-slate-100 px-1 rounded">{toolCount} 工具</span>
+      </div>
+      <div className="text-[10px] text-slate-400 truncate">{desc}</div>
+    </div>
+    <span className={`w-2 h-2 rounded-full shrink-0 ${connected ? 'bg-green-500' : 'bg-slate-300'}`} />
+  </div>
+);

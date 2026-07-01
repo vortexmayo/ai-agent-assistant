@@ -34,11 +34,12 @@ interface MCPToolDef {
 }
 
 
-// ========== 默认 MCP Server 列表 ==========
+// ========== 默认 MCP Server 列表（4 类服务） ==========
 const DEFAULT_MCP_SERVERS: MCPServer[] = [
-  { id: 'mcp-fs', name: '📁 本地文件系统', type: 'filesystem', status: 'connected', description: '读写项目文件' },
-  { id: 'mcp-gh', name: '🐙 GitHub API', type: 'github', status: 'disconnected', description: '仓库操作与 PR 管理' },
-  { id: 'mcp-db', name: '🗄️ 知识库', type: 'database', status: 'connected', description: '向量检索与文档查询' },
+  { id: 'mcp-db', name: '🗄️ SQLite 数据库', type: 'database', status: 'connected', description: '本地数据查询与分析（5 个工具）' },
+  { id: 'mcp-fs', name: '📁 文件系统 (FS)', type: 'filesystem', status: 'connected', description: '项目文件读写与搜索（4 个工具）' },
+  { id: 'mcp-rag', name: '🧠 RAG 知识库', type: 'database', status: 'connected', description: 'Embedding 向量语义检索（3 个工具）' },
+  { id: 'mcp-gh', name: '🐙 GitHub API', type: 'github', status: 'disconnected', description: '公开仓库文件读取（需网络）' },
 ];
 
 // ========== 默认知识库列表 ==========
